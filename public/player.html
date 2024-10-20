@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>HLS Player</title>
+		<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+		<script src="//cdn.jsdelivr.net/npm/hls.js@latest"></script>
+		<script src="/socket.io/socket.io.js"></script>
+		<style>
+			body {
+				margin: 0px;
+				background-color: #000000;
+				color: #fff;
+			}
+			.plyr {
+				height: 100%;
+				width: 100%;
+			}
+		</style>
+	</head>
+	<body>
+		<video id="player" controls></video>
+
+		<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+		<script>
+			document.addEventListener('DOMContentLoaded', () => {
+				const video = document.getElementById('player');
+				const params = new URLSearchParams(window.location.search);
+				const file = params.get('file');
+
+				if (!file) {
+					console.error('No file specified in query parameters');
+					return;
+				}
+
+				// Establish socket connection
+				const socket = io();
+
+				socket.on('connect', () => {
+					console.log('Connected to socket server:', socket.id);
+
+					// Make a request to the server to open the stream session
+					fetch(`/open?file=${encodeURIComponent(file)}&socketId=${socket.id}`)
+						.then((response) => response.json())
+						.then((data) => {
+							if (data.streamUrl) {
+								console.log('Stream received:', data); // Debugging
+
+								// Initialize HLS.js with the stream URL
+								if (Hls.isSupported()) {
+									const hls = new Hls();
+									hls.loadSource(data.streamUrl);
+									hls.attachMedia(video);
+
+									hls.on(Hls.Events.MANIFEST_PARSED, function () {
+										video.play();
+									});
+
+									// Error handling
+									hls.on(Hls.Events.ERROR, function (event, data) {
+										if (data.fatal) {
+											console.error('Fatal HLS error encountered:', data);
+										}
+									});
+								} else {
+									console.error('HLS.js is not supported in this browser');
+								}
+
+								// Initialize Plyr
+								const player = new Plyr(video, {
+									// captions: { active: true, update: true, language: 'en' }
+								});
+
+								// Set up quality options
+								if (data.fileInfo && data.fileInfo.qualities) {
+									player.on('ready', () => {
+										const qualityOptions = data.fileInfo.qualities.map((quality, index) => {
+											return { label: quality.label, value: quality.value, index };
+										});
+										player.quality = {
+											options: qualityOptions.map((q) => q.value),
+											default: qualityOptions[0].value,
+										};
+									});
+								}
+
+								// Set up audio streams
+								if (data.fileInfo && data.fileInfo.audio_streams) {
+									data.fileInfo.audio_streams.forEach((audioStream, index) => {
+										const audioOption = document.createElement('option');
+										audioOption.value = index;
+										audioOption.innerText = `${audioStream.language} (${audioStream.display_title})`;
+										player.audioTracks.add(audioOption);
+									});
+								}
+
+								// Set up subtitles
+								if (data.fileInfo && data.fileInfo.subtitles) {
+									data.fileInfo.subtitles.forEach((subtitle) => {
+										const track = document.createElement('track');
+										track.kind = 'subtitles';
+										track.label = subtitle.label;
+										track.srclang = subtitle.language;
+										track.src = subtitle.url;
+										video.appendChild(track);
+									});
+								}
+							} else {
+								console.error('No stream URL returned from server');
+							}
+						})
+						.catch((error) => {
+							console.error('Error fetching stream URL:', error);
+						});
+				});
+
+				// Handle server events via Socket.IO
+				socket.on('session-update', (data) => {
+					console.log('Session update:', data);
+				});
+
+				socket.on('disconnect', () => {
+					console.error('Disconnected from socket server');
+				});
+			});
+		</script>
+	</body>
+</html>
